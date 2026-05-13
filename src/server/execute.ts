@@ -43,6 +43,8 @@ import {
 } from "./detect-model.js";
 
 import { readHermesSessionUsage } from "./read-hermes-session-usage.js";
+import { promises as fsp } from "node:fs";
+import path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -471,6 +473,49 @@ export async function execute(
     resolvedFrom = resolved.resolvedFrom;
   }
 
+  // ── Load instruction files from managed directory ──────────────────────
+  // Reads all .md files from the agent's managed instructions directory
+  // and prepends them to the prompt so agents actually receive their
+  // role-specific context. Without this, the per-agent AGENTS.md files
+  // visible in the Paperclip UI are never delivered to Hermes.
+  let instructionsPrefix = "";
+  const instructionsRoot =
+    cfgString(config.instructionsRootPath) ||
+    cfgString(config.instructionsFilePath);
+  if (instructionsRoot) {
+    let dir = instructionsRoot;
+    if (path.extname(dir)) {
+      dir = path.dirname(dir);
+    }
+    try {
+      const files = await fsp.readdir(dir);
+      const entryFile = cfgString(config.instructionsEntryFile) || "AGENTS.md";
+      const prioritisedFiles = [
+        entryFile,
+        ...files.filter((f) => f !== entryFile && f.endsWith(".md")),
+      ];
+      const distinctFiles = [...new Set(prioritisedFiles)].filter((f) =>
+        f.endsWith(".md"),
+      );
+      const parts: string[] = [];
+      for (const file of distinctFiles) {
+        try {
+          const content = await fsp.readFile(path.join(dir, file), "utf-8");
+          if (content.trim()) {
+            parts.push(`# ${file}\n\n${content.trim()}`);
+          }
+        } catch {
+          /* file may not exist, skip */
+        }
+      }
+      if (parts.length > 0) {
+        instructionsPrefix = parts.join("\n\n---\n\n") + "\n\n---\n\n";
+      }
+    } catch {
+      /* directory may not exist yet, skip silently */
+    }
+  }
+
   // ── Build prompt ───────────────────────────────────────────────────────
   const promptConfig: Record<string, unknown> = { ...config };
   if (!cfgString(promptConfig.paperclipApiUrl) && configEnv && typeof configEnv === "object") {
@@ -479,7 +524,7 @@ export async function execute(
       promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
     }
   }
-  const prompt = buildPrompt(ctx, promptConfig);
+  const prompt = instructionsPrefix + buildPrompt(ctx, promptConfig);
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
