@@ -323,6 +323,7 @@ export async function execute(
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
+  const forceFreshSession = cfgBoolean(config.forceFreshSession) === true;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
 
@@ -396,11 +397,12 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  // Session resume
+  // Session resume — skipped when forceFreshSession is set so reactive
+  // wakeups (issue_status_changed, comment_added) don't inherit stale context.
   const prevSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
-  if (persistSession && prevSessionId) {
+  if (persistSession && prevSessionId && !forceFreshSession) {
     args.push("--resume", prevSessionId);
   }
 
@@ -439,10 +441,15 @@ export async function execute(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
-  if (prevSessionId) {
+  if (prevSessionId && !forceFreshSession) {
     await ctx.onLog(
       "stdout",
       `[hermes] Resuming session: ${prevSessionId}\n`,
+    );
+  } else if (prevSessionId && forceFreshSession) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Fresh session forced (forceFreshSession=true), ignoring previous session: ${prevSessionId}\n`,
     );
   }
 
