@@ -323,7 +323,20 @@ export async function execute(
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
-  const forceFreshSession = cfgBoolean(config.forceFreshSession) === true;
+  // forceFreshSession: explicit config flag OR reactive wakeup type.
+  // Reactive wakeups (issue_status_changed, issue_commented, etc.) resume a
+  // stale session that already has "no issues" in context — the agent skips
+  // work silently. Scheduled heartbeats should resume to preserve continuity.
+  const REACTIVE_WAKE_REASONS = new Set([
+    "issue_status_changed",
+    "issue_commented",
+    "issue_reopened_via_comment",
+    "issue_assigned",
+  ]);
+  const wakeReason = cfgString((ctx.context as Record<string, unknown> | null)?.wakeReason);
+  const forceFreshSession =
+    cfgBoolean(config.forceFreshSession) === true ||
+    (wakeReason !== undefined && REACTIVE_WAKE_REASONS.has(wakeReason));
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
 
@@ -447,9 +460,10 @@ export async function execute(
       `[hermes] Resuming session: ${prevSessionId}\n`,
     );
   } else if (prevSessionId && forceFreshSession) {
+    const reason = wakeReason ? `wakeReason=${wakeReason}` : "forceFreshSession=true";
     await ctx.onLog(
       "stdout",
-      `[hermes] Fresh session forced (forceFreshSession=true), ignoring previous session: ${prevSessionId}\n`,
+      `[hermes] Fresh session (${reason}), ignoring previous session: ${prevSessionId}\n`,
     );
   }
 
