@@ -36,7 +36,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "pretest": "npm run build",
-    "test": "node --test 'tests/**/*.test.mjs'"
+    "test": "node --test 'tests/**/*.test.mjs' && node --test dist/**/*.spec.js"
   },
   "dependencies": {
     "@paperclipai/adapter-utils": "^2026.325.0",
