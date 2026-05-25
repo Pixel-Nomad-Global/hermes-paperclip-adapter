@@ -82,7 +82,7 @@ function cfgEnvString(v: unknown): string | undefined {
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
 
-const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
+export const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
 
 IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
 

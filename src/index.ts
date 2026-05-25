@@ -19,6 +19,8 @@ import {
   sessionCodec,
 } from "./server/index.js";
 
+export { DEFAULT_PROMPT_TEMPLATE } from "./server/execute.js";
+
 export const type = ADAPTER_TYPE;
 export const label = ADAPTER_LABEL;
 
