@@ -424,7 +424,7 @@ export async function execute(
     (wakeReason !== undefined && REACTIVE_WAKE_REASONS.has(wakeReason));
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
-  const userEnv = config.env as Record<string, unknown> | undefined;
+  const configEnv = config.env as Record<string, unknown> | undefined;
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
@@ -456,8 +456,8 @@ export async function execute(
 
   // ── Build prompt ───────────────────────────────────────────────────────
   const promptConfig: Record<string, unknown> = { ...config };
-  if (!cfgString(promptConfig.paperclipApiUrl) && userEnv && typeof userEnv === "object") {
-    const configuredPaperclipApiUrl = cfgEnvString(userEnv.PAPERCLIP_API_URL);
+  if (!cfgString(promptConfig.paperclipApiUrl) && configEnv && typeof configEnv === "object") {
+    const configuredPaperclipApiUrl = cfgEnvString(configEnv.PAPERCLIP_API_URL);
     if (configuredPaperclipApiUrl) {
       promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
     }
