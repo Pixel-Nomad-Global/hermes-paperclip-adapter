@@ -18,8 +18,11 @@
  *   --source           session source tag for filtering
  */
 import { runChildProcess, buildPaperclipEnv, renderTemplate, ensureAbsoluteDirectory, } from "@paperclipai/adapter-utils/server-utils";
-import { HERMES_CLI, DEFAULT_TIMEOUT_SEC, DEFAULT_GRACE_SEC, DEFAULT_MODEL, } from "../shared/constants.js";
+import { HERMES_CLI, DEFAULT_TIMEOUT_SEC, DEFAULT_GRACE_SEC, } from "../shared/constants.js";
 import { detectModel, resolveProvider, } from "./detect-model.js";
+import { readHermesSessionUsage } from "./read-hermes-session-usage.js";
+import { promises as fsp } from "node:fs";
+import path from "node:path";
 // ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
@@ -49,10 +52,19 @@ function cfgEnvString(v) {
     }
     return undefined;
 }
+function cfgExtraArgs(v) {
+    const values = cfgStringArray(v);
+    if (!values)
+        return undefined;
+    return values.flatMap((value) => value
+        .split(/[\s,]+/)
+        .map((part) => part.trim())
+        .filter(Boolean));
+}
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
-const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
+export const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
 
 IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
 
@@ -314,12 +326,12 @@ export async function execute(ctx) {
     const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {});
     // ── Resolve configuration ──────────────────────────────────────────────
     const hermesCmd = cfgString(config.hermesCommand) || HERMES_CLI;
-    const model = cfgString(config.model) || DEFAULT_MODEL;
+    const model = cfgString(config.model);
     const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
     const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
     const maxTurns = cfgNumber(config.maxTurnsPerRun);
     const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
-    const extraArgs = cfgStringArray(config.extraArgs);
+    const extraArgs = cfgExtraArgs(config.extraArgs);
     const persistSession = cfgBoolean(config.persistSession) !== false;
     // forceFreshSession: explicit config flag OR reactive wakeup type.
     // Reactive wakeups (issue_status_changed, issue_commented, etc.) resume a
@@ -347,22 +359,69 @@ export async function execute(ctx) {
     // This ensures that even if the agent was created before provider tracking
     // was added, or if the model was changed without updating provider, the
     // correct provider is still used.
-    let detectedConfig = null;
+    let resolvedProvider = "auto";
+    let resolvedFrom = "hermesProfile";
     const explicitProvider = cfgString(config.provider);
-    if (!explicitProvider) {
+    if (model || explicitProvider) {
+        let detectedConfig = null;
+        if (!explicitProvider) {
+            try {
+                detectedConfig = await detectModel();
+            }
+            catch {
+                // Non-fatal — detection failure shouldn't block execution
+            }
+        }
+        const resolved = resolveProvider({
+            explicitProvider,
+            detectedProvider: detectedConfig?.provider,
+            detectedModel: detectedConfig?.model,
+            model,
+        });
+        resolvedProvider = resolved.provider;
+        resolvedFrom = resolved.resolvedFrom;
+    }
+    // ── Load instruction files from managed directory ──────────────────────
+    // Reads all .md files from the agent's managed instructions directory
+    // and prepends them to the prompt so agents actually receive their
+    // role-specific context. Without this, the per-agent AGENTS.md files
+    // visible in the Paperclip UI are never delivered to Hermes.
+    let instructionsPrefix = "";
+    const instructionsRoot = cfgString(config.instructionsRootPath) ||
+        cfgString(config.instructionsFilePath);
+    if (instructionsRoot) {
+        let dir = instructionsRoot;
+        if (path.extname(dir)) {
+            dir = path.dirname(dir);
+        }
         try {
-            detectedConfig = await detectModel();
+            const files = await fsp.readdir(dir);
+            const entryFile = cfgString(config.instructionsEntryFile) || "AGENTS.md";
+            const prioritisedFiles = [
+                entryFile,
+                ...files.filter((f) => f !== entryFile && f.endsWith(".md")),
+            ];
+            const distinctFiles = [...new Set(prioritisedFiles)].filter((f) => f.endsWith(".md"));
+            const parts = [];
+            for (const file of distinctFiles) {
+                try {
+                    const content = await fsp.readFile(path.join(dir, file), "utf-8");
+                    if (content.trim()) {
+                        parts.push(`# ${file}\n\n${content.trim()}`);
+                    }
+                }
+                catch {
+                    /* file may not exist, skip */
+                }
+            }
+            if (parts.length > 0) {
+                instructionsPrefix = parts.join("\n\n---\n\n") + "\n\n---\n\n";
+            }
         }
         catch {
-            // Non-fatal — detection failure shouldn't block execution
+            /* directory may not exist yet, skip silently */
         }
     }
-    const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
-        explicitProvider,
-        detectedProvider: detectedConfig?.provider,
-        detectedModel: detectedConfig?.model,
-        model,
-    });
     // ── Build prompt ───────────────────────────────────────────────────────
     const promptConfig = { ...config };
     if (!cfgString(promptConfig.paperclipApiUrl) && configEnv && typeof configEnv === "object") {
@@ -371,7 +430,7 @@ export async function execute(ctx) {
             promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
         }
     }
-    const prompt = buildPrompt(ctx, promptConfig);
+    const prompt = instructionsPrefix + buildPrompt(ctx, promptConfig);
     // ── Build command args ─────────────────────────────────────────────────
     // Use -Q (quiet) to get clean output: just response + session_id line
     const useQuiet = cfgBoolean(config.quiet) !== false; // default true
@@ -460,7 +519,7 @@ export async function execute(ctx) {
         // Non-fatal
     }
     // ── Log start ──────────────────────────────────────────────────────────
-    await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`);
+    await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model ?? "Hermes profile default"}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`);
     if (prevSessionId && !forceFreshSession) {
         await ctx.onLog("stdout", `[hermes] Resuming session: ${prevSessionId}\n`);
     }
@@ -521,6 +580,42 @@ export async function execute(ctx) {
     }
     if (parsed.costUsd !== undefined) {
         executionResult.costUsd = parsed.costUsd;
+    }
+    // Fallback: when the stdout regexes didn't extract usage but Hermes
+    // recorded a session, query Hermes' SQLite state via
+    // `hermes sessions export --session-id <id> -` for the real numbers.
+    //
+    // This is the common case under the Anthropic and OpenAI providers —
+    // Hermes consumes the SDK's `usage` field internally and doesn't echo
+    // a `tokens:` line to stdout, so the stdout-grep path comes up empty
+    // and Paperclip's cost_events table never gets a row.
+    //
+    // The reader returns null on any error (binary missing, session not
+    // found, malformed JSON, older Hermes without the export subcommand),
+    // so this is purely additive — never breaks an otherwise-successful run.
+    if (!executionResult.usage && parsed.sessionId) {
+        const fallback = await readHermesSessionUsage({
+            hermesCmd,
+            hermesHome: env.HERMES_HOME,
+            sessionId: parsed.sessionId,
+        });
+        if (fallback) {
+            executionResult.usage = fallback.usage;
+            if (executionResult.costUsd === undefined && fallback.costUsd !== undefined) {
+                executionResult.costUsd = fallback.costUsd;
+            }
+            const parts = [
+                `${fallback.usage.inputTokens} input`,
+                `${fallback.usage.outputTokens} output`,
+            ];
+            if (fallback.usage.cachedInputTokens) {
+                parts.push(`${fallback.usage.cachedInputTokens} cache read`);
+            }
+            if (fallback.costUsd !== undefined) {
+                parts.push(`est cost $${fallback.costUsd.toFixed(4)}`);
+            }
+            await ctx.onLog("stdout", `[hermes] Usage from session store: ${parts.join(", ")}\n`);
+        }
     }
     // Summary from agent response
     if (parsed.response) {
