@@ -10,7 +10,8 @@ import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
  * Session codec for structured validation and migration of session parameters.
  *
  * Hermes Agent uses a single `sessionId` for cross-heartbeat session continuity
- * via the `--resume` CLI flag. The codec validates and normalizes this field.
+ * via the `--resume` CLI flag. The codec validates and normalizes this field,
+ * rejecting values that do not match the Hermes session ID format.
  */
 export declare const sessionCodec: AdapterSessionCodec;
 //# sourceMappingURL=index.d.ts.map

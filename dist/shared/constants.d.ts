@@ -11,13 +11,20 @@ export declare const HERMES_CLI = "hermes";
 export declare const DEFAULT_TIMEOUT_SEC = 1800;
 /** Grace period after SIGTERM before SIGKILL (seconds). */
 export declare const DEFAULT_GRACE_SEC = 10;
-/** Default model to use if none specified. */
-export declare const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
+/**
+ * Default model to use if none specified.
+ *
+ * Use "auto" so Hermes resolves the user's configured default model instead of
+ * forcing a baked-in provider/model id. This keeps fresh Paperclip agents from
+ * inheriting retired defaults and lets local Hermes provider routing own the
+ * fallback behavior.
+ */
+export declare const DEFAULT_MODEL = "auto";
 /**
  * Valid --provider choices for the hermes CLI.
  * Must stay in sync with `hermes chat --help`.
  */
-export declare const VALID_PROVIDERS: readonly ["auto", "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"];
+export declare const VALID_PROVIDERS: readonly ["auto", "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "custom", "ollama-cloud", "deepseek", "nvidia", "xai", "bedrock"];
 /**
  * Model-name prefix → provider hint mapping.
  * Used when no explicit provider is configured and we need to infer

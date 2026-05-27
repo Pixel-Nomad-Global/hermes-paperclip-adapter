@@ -37,6 +37,18 @@ function cfgStringArray(v) {
         ? v
         : undefined;
 }
+function cfgEnvString(v) {
+    if (typeof v === "string" && v.length > 0)
+        return v;
+    if (v &&
+        typeof v === "object" &&
+        "value" in v &&
+        typeof v.value === "string" &&
+        v.value.length > 0) {
+        return v.value;
+    }
+    return undefined;
+}
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -60,48 +72,79 @@ Title: {{taskTitle}}
 ## Workflow
 
 1. Work on the task using your tools
-2. When done, mark the issue as completed:
+2. When the task is complete or re-complete, mark the issue as completed:
    \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"done"}'\`
-3. Post a completion comment on the issue summarizing what you did:
+3. When the task is complete or re-complete, post a completion comment on the issue summarizing what you did:
    \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
-4. If this issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
+4. If the completed issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
    \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
+
+Completion actions are conditional: run steps 2-4 only when the current run genuinely completes or re-completes the assigned task, not merely because you received a wake or comment.
 {{/taskId}}
 
 {{#commentId}}
 ## Comment on This Issue
 
 Someone commented. Read it:
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | jq\`
 
-Address the comment, POST a reply if needed, then continue working.
+Address the comment directly. Post one substantive reply if needed, then stop unless your reply genuinely completes or re-completes the assigned task.
+Do not mark the issue done or post a DONE recap unless this reply genuinely resolves the task.
 {{/commentId}}
 
 {{#noTask}}
 ## Heartbeat Wake — Check for Work
 
 1. List ALL open issues assigned to you (todo, backlog, in_progress):
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | jq -r '.[] | select(.status != "done" and .status != "cancelled") | "\\(.identifier) \\(.status) \\(.priority) \\(.title)"'\`
 
 2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
    - Read the issue details: \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
    - Do the work in the project directory: {{projectName}}
-   - When done, mark complete and post a comment (see Workflow steps 2-4 above)
+   - When the selected task is complete, mark complete and post a comment (see conditional Workflow steps 2-4 above)
 
 3. If no issues assigned to you, check for unassigned issues:
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | jq -r '.[] | select(.assigneeAgentId == null) | "\\(.identifier) \\(.title)"'\`
    If you find a relevant issue, assign it to yourself:
    \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
 
 4. If truly nothing to do, report briefly what you checked.
 {{/noTask}}`;
-function buildPrompt(ctx, config) {
+function readPaperclipIssue(ctx) {
+    const raw = ctx.context?.paperclipIssue;
+    if (raw && typeof raw === "object") {
+        return raw;
+    }
+    return null;
+}
+/** @internal Exported for unit tests. Not part of the public adapter API. */
+export function buildPrompt(ctx, config) {
     const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
-    const taskId = cfgString(ctx.config?.taskId);
-    const taskTitle = cfgString(ctx.config?.taskTitle) || "";
-    const taskBody = cfgString(ctx.config?.taskBody) || "";
-    const commentId = cfgString(ctx.config?.commentId) || "";
-    const wakeReason = cfgString(ctx.config?.wakeReason) || "";
+    // Paperclip's heartbeat service passes wake metadata in ctx.context (the
+    // per-run contextSnapshot), not ctx.config (the adapter's runtimeConfig).
+    // We keep ctx.config as the first source for backwards compatibility with
+    // any custom caller that already populates it, then fall back to ctx.context
+    // — which is what real Paperclip heartbeats actually use. Without the
+    // ctx.context fallback every @-mention comment and direct task assignment
+    // falls through to the {{#noTask}} branch because ctx.config.taskId is
+    // never populated by the server. See @paperclipai/server heartbeat.ts
+    // (the adapter.execute call) and @paperclipai/adapter-claude-local, which
+    // reads ctx.context.taskId directly.
+    const ctxIssue = readPaperclipIssue(ctx);
+    const taskId = cfgString(ctx.config?.taskId) ||
+        cfgString(ctx.context?.taskId) ||
+        cfgString(ctx.context?.issueId);
+    const taskTitle = cfgString(ctx.config?.taskTitle) || cfgString(ctxIssue?.title) || "";
+    const taskBody = cfgString(ctx.config?.taskBody) ||
+        cfgString(ctxIssue?.description) ||
+        "";
+    const commentId = cfgString(ctx.config?.commentId) ||
+        cfgString(ctx.context?.wakeCommentId) ||
+        cfgString(ctx.context?.commentId) ||
+        "";
+    const wakeReason = cfgString(ctx.config?.wakeReason) ||
+        cfgString(ctx.context?.wakeReason) ||
+        "";
     const agentName = ctx.agent?.name || "Hermes Agent";
     const companyName = cfgString(ctx.config?.companyName) || "";
     const projectName = cfgString(ctx.config?.projectName) || "";
@@ -143,8 +186,6 @@ function buildPrompt(ctx, config) {
 // ---------------------------------------------------------------------------
 /** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
 const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
-/** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX = /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
 /** Regex to extract cost from Hermes output. */
@@ -186,7 +227,7 @@ function cleanResponse(raw) {
 // ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
-function parseHermesOutput(stdout, stderr) {
+export function parseHermesOutput(stdout, stderr) {
     const combined = stdout + "\n" + stderr;
     const result = {};
     // In quiet mode, Hermes outputs:
@@ -203,13 +244,15 @@ function parseHermesOutput(stdout, stderr) {
         }
     }
     else {
-        // Legacy format (non-quiet mode)
-        const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-        if (legacyMatch?.[1]) {
-            result.sessionId = legacyMatch?.[1] ?? null;
-        }
-        // In non-quiet mode, extract clean response from stdout by
-        // filtering out tool lines, system messages, and noise
+        // No `session_id: <id>` line found. Previously a permissive legacy
+        // regex (/session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i) was used as
+        // a fallback, but it matched error sentences such as
+        // "Use a session ID from a previous CLI run" and captured tokens like
+        // "from" as the session id. That bogus id was then persisted and
+        // passed to the next run as `--resume from`, which Hermes/Claude
+        // rejected, looping the agent on broken sessions. We now require the
+        // strict `^session_id: <id>` line and never infer ids from prose.
+        // In non-quiet mode, still extract a cleaned response for the summary.
         const cleaned = cleanResponse(stdout);
         if (cleaned.length > 0) {
             result.response = cleaned;
@@ -241,6 +284,30 @@ function parseHermesOutput(stdout, stderr) {
     return result;
 }
 // ---------------------------------------------------------------------------
+// Session persistence
+// ---------------------------------------------------------------------------
+/**
+ * Decide the session params to persist for the next run.
+ *
+ * Only returns params on a clean successful exit. If the run errored or
+ * timed out, any session id parsed from the output is suspect (the CLI
+ * may have aborted mid-write or printed a sentinel like "session
+ * expired"), and persisting it would brick the next heartbeat with
+ * `--resume <bad-id>`.
+ */
+export function buildPersistedSessionParams(args) {
+    const { persistSession, sessionId, exitCode, timedOut } = args;
+    if (!persistSession)
+        return null;
+    if (!sessionId)
+        return null;
+    if (exitCode !== 0)
+        return null;
+    if (timedOut)
+        return null;
+    return { sessionId };
+}
+// ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
 export async function execute(ctx) {
@@ -269,6 +336,7 @@ export async function execute(ctx) {
         (wakeReason !== undefined && REACTIVE_WAKE_REASONS.has(wakeReason));
     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
     const checkpoints = cfgBoolean(config.checkpoints) === true;
+    const configEnv = config.env;
     // ── Resolve provider (defense in depth) ────────────────────────────────
     // Priority chain:
     //   1. Explicit provider in adapterConfig (user override)
@@ -296,7 +364,14 @@ export async function execute(ctx) {
         model,
     });
     // ── Build prompt ───────────────────────────────────────────────────────
-    const prompt = buildPrompt(ctx, config);
+    const promptConfig = { ...config };
+    if (!cfgString(promptConfig.paperclipApiUrl) && configEnv && typeof configEnv === "object") {
+        const configuredPaperclipApiUrl = cfgEnvString(configEnv.PAPERCLIP_API_URL);
+        if (configuredPaperclipApiUrl) {
+            promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
+        }
+    }
+    const prompt = buildPrompt(ctx, promptConfig);
     // ── Build command args ─────────────────────────────────────────────────
     // Use -Q (quiet) to get clean output: just response + session_id line
     const useQuiet = cfgBoolean(config.quiet) !== false; // default true
@@ -350,12 +425,31 @@ export async function execute(ctx) {
         env.PAPERCLIP_RUN_ID = ctx.runId;
     if (ctx.authToken && !env.PAPERCLIP_API_KEY)
         env.PAPERCLIP_API_KEY = ctx.authToken;
-    const taskId = cfgString(ctx.config?.taskId);
+    // Mirror the prompt builder: prefer ctx.context, fall back to ctx.config.
+    const taskId = cfgString(ctx.config?.taskId) ||
+        cfgString(ctx.context?.taskId) ||
+        cfgString(ctx.context?.issueId);
     if (taskId)
         env.PAPERCLIP_TASK_ID = taskId;
+    const wakeReasonEnv = cfgString(ctx.config?.wakeReason) || cfgString(ctx.context?.wakeReason);
+    if (wakeReasonEnv)
+        env.PAPERCLIP_WAKE_REASON = wakeReasonEnv;
+    const wakeCommentIdEnv = cfgString(ctx.config?.commentId) ||
+        cfgString(ctx.context?.wakeCommentId) ||
+        cfgString(ctx.context?.commentId);
+    if (wakeCommentIdEnv)
+        env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentIdEnv;
     const userEnv = config.env;
     if (userEnv && typeof userEnv === "object") {
-        Object.assign(env, userEnv);
+        for (const [key, raw] of Object.entries(userEnv)) {
+            if (raw && typeof raw === "object" && "value" in raw) {
+                // Paperclip wraps env values as {type: "plain"|"secret", value: string}
+                env[key] = String(raw.value);
+            }
+            else if (typeof raw === "string") {
+                env[key] = raw;
+            }
+        }
     }
     // ── Resolve working directory ──────────────────────────────────────────
     const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
@@ -403,6 +497,7 @@ export async function execute(ctx) {
         timeoutSec,
         graceSec,
         onLog: wrappedOnLog,
+        onSpawn: ctx.onSpawn,
     });
     // ── Parse output ───────────────────────────────────────────────────────
     const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
@@ -438,10 +533,16 @@ export async function execute(ctx) {
         usage: parsed.usage || null,
         cost_usd: parsed.costUsd ?? null,
     };
-    // Store session ID for next run
-    if (persistSession && parsed.sessionId) {
-        executionResult.sessionParams = { sessionId: parsed.sessionId };
-        executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+    // Store session ID for next run (gated on a clean successful exit).
+    const persistedSession = buildPersistedSessionParams({
+        persistSession,
+        sessionId: parsed.sessionId,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+    });
+    if (persistedSession) {
+        executionResult.sessionParams = persistedSession;
+        executionResult.sessionDisplayId = persistedSession.sessionId.slice(0, 16);
     }
     return executionResult;
 }
