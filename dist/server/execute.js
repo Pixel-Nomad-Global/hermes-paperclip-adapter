@@ -498,6 +498,52 @@ export async function execute(ctx) {
         cfgString(ctx.context?.commentId);
     if (wakeCommentIdEnv)
         env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentIdEnv;
+    // ── Resolve SKILL_DIR for script-based skills ─────────────────────────────
+    // Allows SKILL.md instructions to reference $SKILL_DIR/script.sh so scripts
+    // that ship alongside SKILL.md in the overlay-skills directory are reachable
+    // from within hermes's terminal tool.
+    //
+    // Path mapping (configurable via config):
+    //   paperclip-wrapper sees skills at skillSourceBase (default /paperclip/skills)
+    //   hermes-shared sees the same host directory at hermesSkillBase (default /opt/data/skills)
+    //
+    // Active skill is detected from "Skill: <key>" line in the issue body.
+    // Falls back to ctx.context.skillKey if Paperclip populates it in future.
+    if (taskId) {
+        const skillSourceBase = cfgString(config.skillSourceBase) ?? "/paperclip/skills";
+        const hermesSkillBase = cfgString(config.hermesSkillBase) ?? "/opt/data/skills";
+        const ctxSkillKey = cfgString(ctx.context?.skillKey);
+        let activeSkillKey = ctxSkillKey;
+        if (!activeSkillKey) {
+            // Derive taskBody the same way buildPrompt does
+            const ctxIssueForSkill = readPaperclipIssue(ctx);
+            const issueBody = cfgString(ctx.config?.taskBody) ||
+                cfgString(ctxIssueForSkill?.description) ||
+                "";
+            const m = issueBody.match(/^Skill:\s*(\S+)/m);
+            if (m?.[1])
+                activeSkillKey = m[1].trim();
+        }
+        if (activeSkillKey) {
+            // Find the skill entry from paperclipRuntimeSkills config
+            const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills)
+                ? config.paperclipRuntimeSkills
+                : [];
+            const entry = runtimeSkills.find((s) => s?.key === activeSkillKey || s?.runtimeName === activeSkillKey);
+            const source = typeof entry?.source === "string" ? entry.source : undefined;
+            let hermesSkillDir;
+            if (source?.startsWith(skillSourceBase)) {
+                // Remap from paperclip-wrapper path to hermes-shared path
+                hermesSkillDir = hermesSkillBase + source.slice(skillSourceBase.length);
+            }
+            else {
+                // No source or different base — derive path directly from skill key
+                hermesSkillDir = `${hermesSkillBase}/${activeSkillKey}`;
+            }
+            env.SKILL_DIR = hermesSkillDir;
+            await ctx.onLog("stdout", `[hermes] SKILL_DIR=${hermesSkillDir} (skill=${activeSkillKey})\n`);
+        }
+    }
     const userEnv = config.env;
     if (userEnv && typeof userEnv === "object") {
         for (const [key, raw] of Object.entries(userEnv)) {
