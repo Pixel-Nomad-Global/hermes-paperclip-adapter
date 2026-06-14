@@ -516,6 +516,38 @@ export async function execute(
     }
   }
 
+  // ── Terminal-status guard (#92 + in_review) ────────────────────────────
+  // Paperclip can deliver a wake for an issue that is already in a terminal
+  // state (deferred wake, late comment, re-delivery, or status-change loop).
+  // Spawning a Hermes run for a done/cancelled/in_review issue wastes budget
+  // and causes redundant approval creation. in_review is added here because
+  // hermes setting in_review fires issue_status_changed which would otherwise
+  // re-trigger a full run immediately.
+  const wakeCtx = (ctx.context ?? {}) as {
+    issueStatus?: unknown;
+    paperclipWake?: { issue?: { status?: unknown } };
+  };
+  const wakeStatus = (
+    cfgString(wakeCtx.paperclipWake?.issue?.status) ||
+    cfgString(wakeCtx.issueStatus) ||
+    ""
+  ).toLowerCase();
+  if (wakeStatus === "done" || wakeStatus === "cancelled" || wakeStatus === "in_review") {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Skipping run — issue already in terminal status "${wakeStatus}" (guard #92)\n`,
+    );
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      provider: resolvedProvider,
+      model,
+      summary: `Skipped: issue already "${wakeStatus}"; no Hermes run spawned (guard #92).`,
+      resultJson: { result: "", session_id: null, usage: null, cost_usd: null },
+    };
+  }
+
   // ── Build prompt ───────────────────────────────────────────────────────
   const promptConfig: Record<string, unknown> = { ...config };
   if (!cfgString(promptConfig.paperclipApiUrl) && configEnv && typeof configEnv === "object") {
