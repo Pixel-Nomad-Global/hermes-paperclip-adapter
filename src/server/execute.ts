@@ -657,6 +657,7 @@ export async function execute(
       const issueBody =
         cfgString(ctx.config?.taskBody) ||
         cfgString(ctxIssueForSkill?.description) ||
+        cfgString((ctx.context as Record<string, unknown>)?.paperclipTaskMarkdown) ||
         "";
       const m = issueBody.match(/^Skill:\s*(\S+)/m);
       if (m?.[1]) activeSkillKey = m[1].trim();

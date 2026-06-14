@@ -542,6 +542,7 @@ export async function execute(ctx) {
             const ctxIssueForSkill = readPaperclipIssue(ctx);
             const issueBody = cfgString(ctx.config?.taskBody) ||
                 cfgString(ctxIssueForSkill?.description) ||
+                cfgString(ctx.context?.paperclipTaskMarkdown) ||
                 "";
             const m = issueBody.match(/^Skill:\s*(\S+)/m);
             if (m?.[1])
