@@ -516,13 +516,16 @@ export async function execute(
     }
   }
 
-  // ── Terminal-status guard (#92 + in_review) ────────────────────────────
+  // ── Terminal-status guard (#92 + in_review + approval_approved) ─────────
   // Paperclip can deliver a wake for an issue that is already in a terminal
   // state (deferred wake, late comment, re-delivery, or status-change loop).
   // Spawning a Hermes run for a done/cancelled/in_review issue wastes budget
   // and causes redundant approval creation. in_review is added here because
   // hermes setting in_review fires issue_status_changed which would otherwise
   // re-trigger a full run immediately.
+  // approval_approved fires when a human approves a board approval — in our
+  // stack ecommerce-bot owns all post-approval actions, so there is nothing
+  // for hermes to do and a second run would duplicate or corrupt the output.
   const wakeCtx = (ctx.context ?? {}) as {
     issueStatus?: unknown;
     paperclipWake?: { issue?: { status?: unknown } };
@@ -532,10 +535,16 @@ export async function execute(
     cfgString(wakeCtx.issueStatus) ||
     ""
   ).toLowerCase();
-  if (wakeStatus === "done" || wakeStatus === "cancelled" || wakeStatus === "in_review") {
+  const skipWakeReasons = new Set(["approval_approved", "approval_rejected"]);
+  const guardReason = wakeStatus === "done" || wakeStatus === "cancelled" || wakeStatus === "in_review"
+    ? `issue already in terminal status "${wakeStatus}"`
+    : skipWakeReasons.has(wakeReason ?? "")
+      ? `wake reason "${wakeReason}" requires no hermes action`
+      : null;
+  if (guardReason) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Skipping run — issue already in terminal status "${wakeStatus}" (guard #92)\n`,
+      `[hermes] Skipping run — ${guardReason} (guard #92)\n`,
     );
     return {
       exitCode: 0,
@@ -543,7 +552,7 @@ export async function execute(
       timedOut: false,
       provider: resolvedProvider,
       model,
-      summary: `Skipped: issue already "${wakeStatus}"; no Hermes run spawned (guard #92).`,
+      summary: `Skipped: ${guardReason}; no Hermes run spawned (guard #92).`,
       resultJson: { result: "", session_id: null, usage: null, cost_usd: null },
     };
   }
