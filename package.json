@@ -1,5 +1,5 @@
 {
-  "name": "hermes-paperclip-adapter",
+  "name": "@pixel-nomad-global/hermes-paperclip-adapter",
   "version": "0.3.0",
   "description": "Paperclip adapter for Hermes Agent — run Hermes as a managed employee in a Paperclip company",
   "type": "module",
@@ -48,5 +48,9 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
   }
 }
