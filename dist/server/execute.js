@@ -437,11 +437,45 @@ export async function execute(ctx) {
         cfgString(wakeCtx.issueStatus) ||
         "").toLowerCase();
     const skipWakeReasons = new Set(["approval_approved", "approval_rejected"]);
-    const guardReason = wakeStatus === "done" || wakeStatus === "cancelled" || wakeStatus === "in_review"
+    let guardReason = wakeStatus === "done" || wakeStatus === "cancelled" || wakeStatus === "in_review"
         ? `issue already in terminal status "${wakeStatus}"`
         : skipWakeReasons.has(wakeReason ?? "")
             ? `wake reason "${wakeReason}" requires no hermes action`
             : null;
+    // Liveness continuation wakes carry a stale status snapshot: the liveness
+    // engine judges the PREVIOUS run (hermes acts via curl, so its API actions
+    // are never attributed to the run) and can fire issue_continuation_needed
+    // after the issue has already reached a terminal state — observed live
+    // 2026-07-21: a continuation re-ran the full image skill (second paid
+    // generation, duplicate approval) for an issue that was already done.
+    // For these wakes, check the LIVE status before spawning. Fail-open: any
+    // fetch problem falls through to a normal run.
+    if (!guardReason && wakeReason === "issue_continuation_needed") {
+        const wakeIds = (ctx.context ?? {});
+        const liveIssueId = cfgString(wakeIds.issueId) || cfgString(wakeIds.taskId);
+        const apiUrl = cfgString(config.paperclipApiUrl) ||
+            (configEnv ? cfgEnvString(configEnv.PAPERCLIP_API_URL) : undefined) ||
+            process.env.PAPERCLIP_API_URL;
+        const apiKey = (configEnv ? cfgEnvString(configEnv.PAPERCLIP_API_KEY) : undefined) ||
+            process.env.PAPERCLIP_API_KEY;
+        if (liveIssueId && apiUrl && apiKey) {
+            try {
+                const resp = await fetch(`${apiUrl.replace(/\/$/, "")}/issues/${liveIssueId}`, {
+                    headers: { Authorization: `Bearer ${apiKey}` },
+                    signal: AbortSignal.timeout(5000),
+                });
+                if (resp.ok) {
+                    const liveStatus = String((await resp.json()).status ?? "").toLowerCase();
+                    if (["done", "cancelled", "in_review"].includes(liveStatus)) {
+                        guardReason = `continuation wake but live issue status is "${liveStatus}"`;
+                    }
+                }
+            }
+            catch {
+                /* fail-open — never block a legitimate continuation on a fetch error */
+            }
+        }
+    }
     if (guardReason) {
         await ctx.onLog("stdout", `[hermes] Skipping run — ${guardReason} (guard #92)\n`);
         return {
