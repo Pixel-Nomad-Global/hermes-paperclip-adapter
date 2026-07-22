@@ -28,7 +28,7 @@ interface ParsedOutput {
     costUsd?: number;
     errorMessage?: string;
 }
-export declare function parseHermesOutput(stdout: string, stderr: string): ParsedOutput;
+export declare function parseHermesOutput(stdout: string, stderr: string, exitCode?: number | null): ParsedOutput;
 /**
  * Decide the session params to persist for the next run.
  *
