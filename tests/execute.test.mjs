@@ -52,6 +52,41 @@ test("parseHermesOutput does NOT capture from free-text 'session id: foo' lines"
   assert.equal(parsed.sessionId, undefined);
 });
 
+test("parseHermesOutput ignores interpreter-shutdown noise on exit code 0", () => {
+  // Captured from a real run (2026-07-21) where a cross-grain profile had
+  // dead MCP server entries; teardown raced the asyncio event loop close and
+  // wrote this to stderr on an otherwise-successful run. Before the fix, the
+  // adapter marked this `adapter_failed` despite exit code 0.
+  const stderr = [
+    "Exception ignored in: <async_generator object stdio_client at 0x7f2a1c0b3e40>",
+    "Traceback (most recent call last):",
+    '  File "/opt/hermes/.venv/lib/python3.11/site-packages/mcp/client/stdio/__init__.py", line 158, in stdio_client',
+    "    yield read_stream, write_stream",
+    "RuntimeError: Event loop is closed",
+    "",
+  ].join("\n");
+  const parsed = parseHermesOutput("All done.\n\nsession_id: abc123", stderr, 0);
+  assert.equal(parsed.errorMessage, undefined);
+});
+
+test("parseHermesOutput still flags a real error in stderr on exit code 0", () => {
+  const stderr = "Error: could not reach hindsight service\n";
+  const parsed = parseHermesOutput("", stderr, 0);
+  assert.match(parsed.errorMessage, /could not reach hindsight service/);
+});
+
+test("parseHermesOutput keeps the conservative (non-zero exit) behavior", () => {
+  // Same shutdown noise, but a non-zero exit code must not have it stripped —
+  // the fix is conservative and only relaxes the check on a clean exit.
+  const stderr = [
+    "Exception ignored in: <async_generator object stdio_client at 0x7f2a1c0b3e40>",
+    "Traceback (most recent call last):",
+    "RuntimeError: Event loop is closed",
+  ].join("\n");
+  const parsed = parseHermesOutput("", stderr, 1);
+  assert.match(parsed.errorMessage, /Traceback/);
+});
+
 // ---------------------------------------------------------------------------
 // buildPersistedSessionParams
 // ---------------------------------------------------------------------------

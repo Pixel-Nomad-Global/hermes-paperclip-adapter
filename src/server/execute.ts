@@ -314,7 +314,48 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+/**
+ * Strip Python interpreter-shutdown noise from stderr: "Exception ignored in:"
+ * blocks (and the traceback lines that follow, until a blank line or a
+ * non-indented, non-"Traceback"/non-"RuntimeError" line) and bare
+ * "RuntimeError: Event loop is closed" lines. This noise comes from parked
+ * MCP client teardown racing the asyncio event loop close and shows up on
+ * stderr of otherwise-successful (exit 0) runs. See OUTSTANDING.md P4 notes.
+ */
+function stripInterpreterShutdownNoise(stderr: string): string {
+  const lines = stderr.split("\n");
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (/^Exception ignored in:/.test(line.trim())) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (
+        line.trim() === "" ||
+        /^Traceback \(most recent call last\):/.test(line.trim()) ||
+        /^File "/.test(line.trim()) ||
+        /^\s/.test(line) ||
+        /^RuntimeError: Event loop is closed/.test(line.trim())
+      ) {
+        continue;
+      }
+      skipping = false;
+    }
+    if (/^RuntimeError: Event loop is closed/.test(line.trim())) {
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+export function parseHermesOutput(
+  stdout: string,
+  stderr: string,
+  exitCode?: number | null,
+): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -361,9 +402,13 @@ export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput 
     result.costUsd = parseFloat(costMatch[1]);
   }
 
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
-    const errorLines = stderr
+  // Check for error patterns in stderr. On a clean exit, strip Python
+  // interpreter-shutdown noise first so it can't fail an otherwise-successful
+  // run. Non-zero/unknown exit codes keep the conservative original behavior.
+  const stderrForErrorCheck =
+    exitCode === 0 ? stripInterpreterShutdownNoise(stderr) : stderr;
+  if (stderrForErrorCheck.trim()) {
+    const errorLines = stderrForErrorCheck
       .split("\n")
       .filter((line) => /error|exception|traceback|failed/i.test(line))
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
@@ -808,7 +853,11 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseHermesOutput(
+    result.stdout || "",
+    result.stderr || "",
+    result.exitCode,
+  );
 
   await ctx.onLog(
     "stdout",
