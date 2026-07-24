@@ -356,6 +356,70 @@ export function buildPersistedSessionParams(args) {
         return null;
     return { sessionId };
 }
+/** @internal Exported for unit tests only. */
+export const inFlightRunsByIssue = new Map();
+// Self-expiry so a crashed/leaked run can never wedge an issue forever. The
+// longest real run seen is ~211s; the sandbox wall-clock backstop (4h) is far
+// too long to hold an issue hostage. 20 min leaves generous headroom over any
+// real image job while still freeing a stuck issue promptly.
+export const INFLIGHT_TTL_MS = 20 * 60 * 1000;
+// Wake reasons that carry genuine NEW user input. A concurrent run for one of
+// these is legitimate (e.g. a client comments while an automated run is still
+// in flight) and must never be skipped by this guard. Everything else — the
+// automated wakes that actually cause the collision: heartbeat_timer,
+// issue_continuation_needed, liveness/auto-assign — is subject to the guard.
+export const CONCURRENCY_ALLOWED_WAKE_REASONS = new Set([
+    "issue_commented",
+    "issue_reopened_via_comment",
+]);
+/**
+ * Attempt to claim the in-flight slot for an issue.
+ *
+ * @internal Exported for unit tests. Not part of the public adapter API.
+ *
+ * Returns `{ skip: true }` if another run already holds the issue's slot;
+ * otherwise registers this run and returns a `release()` to clear it. Runs with
+ * no issue id, or with an allowed (user-input) wake reason, are never guarded.
+ *
+ * The get/purge/set sequence contains no `await`, so it executes atomically on
+ * Node's single thread — two concurrent execute() calls cannot both claim.
+ */
+export function claimIssueRun(args) {
+    const noop = () => { };
+    const { issueId, runId, wakeReason } = args;
+    const now = args.now ?? Date.now();
+    const ttlMs = args.ttlMs ?? INFLIGHT_TTL_MS;
+    const registry = args.registry ?? inFlightRunsByIssue;
+    // No issue to key on (e.g. a "check for work" heartbeat) — nothing to guard.
+    if (!issueId || !runId)
+        return { skip: false, release: noop };
+    // Genuine user input is always allowed through, even concurrently.
+    if (wakeReason && CONCURRENCY_ALLOWED_WAKE_REASONS.has(wakeReason)) {
+        return { skip: false, release: noop };
+    }
+    // Purge expired entries so a crashed run can't wedge the issue past its TTL.
+    const existing = registry.get(issueId);
+    if (existing && now - existing.startedAt > ttlMs) {
+        registry.delete(issueId);
+    }
+    const held = registry.get(issueId);
+    if (held && held.runId !== runId) {
+        return {
+            skip: true,
+            guardReason: `a run (${held.runId}) is already in flight for this issue`,
+            release: noop,
+        };
+    }
+    registry.set(issueId, { runId, startedAt: now });
+    return {
+        skip: false,
+        release: () => {
+            const cur = registry.get(issueId);
+            if (cur && cur.runId === runId)
+                registry.delete(issueId);
+        },
+    };
+}
 // ---------------------------------------------------------------------------
 // Main execute
 // ---------------------------------------------------------------------------
@@ -700,14 +764,43 @@ export async function execute(ctx) {
         }
         return ctx.onLog(stream, chunk);
     };
-    const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-        cwd,
-        env,
-        timeoutSec,
-        graceSec,
-        onLog: wrappedOnLog,
-        onSpawn: ctx.onSpawn,
+    // ── Concurrent-run guard (GL-5.1) ──────────────────────────────────────
+    // Claim the issue's in-flight slot immediately before spawning. If another
+    // run already holds it (a slow first run not yet terminal + a second
+    // automated wake), skip rather than spawn a duplicate. taskId is the issue
+    // id (ctx.context.taskId || ctx.context.issueId), already resolved above.
+    // Claim + skip-check is synchronous here, so it is the serialization point.
+    const runClaim = claimIssueRun({
+        issueId: taskId,
+        runId: ctx.runId,
+        wakeReason,
     });
+    if (runClaim.skip) {
+        await ctx.onLog("stdout", `[hermes] Skipping run — ${runClaim.guardReason} (GL-5.1 concurrent-run guard)\n`);
+        return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            provider: resolvedProvider,
+            model,
+            summary: `Skipped: ${runClaim.guardReason}; no Hermes run spawned (GL-5.1 concurrent-run guard).`,
+            resultJson: { result: "", session_id: null, usage: null, cost_usd: null },
+        };
+    }
+    let result;
+    try {
+        result = await runChildProcess(ctx.runId, hermesCmd, args, {
+            cwd,
+            env,
+            timeoutSec,
+            graceSec,
+            onLog: wrappedOnLog,
+            onSpawn: ctx.onSpawn,
+        });
+    }
+    finally {
+        runClaim.release();
+    }
     // ── Parse output ───────────────────────────────────────────────────────
     const parsed = parseHermesOutput(result.stdout || "", result.stderr || "", result.exitCode);
     await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);

@@ -46,6 +46,42 @@ export declare function buildPersistedSessionParams(args: {
 }): {
     sessionId: string;
 } | null;
+interface InFlightRun {
+    runId: string;
+    startedAt: number;
+}
+/** @internal Exported for unit tests only. */
+export declare const inFlightRunsByIssue: Map<string, InFlightRun>;
+export declare const INFLIGHT_TTL_MS: number;
+export declare const CONCURRENCY_ALLOWED_WAKE_REASONS: Set<string>;
+export interface IssueRunClaim {
+    /** True → another run is already in flight for this issue; caller must skip. */
+    skip: boolean;
+    /** Present when skip is true — human-readable reason for logs/summary. */
+    guardReason?: string;
+    /** Release this run's claim (no-op if the claim was not held by this run). */
+    release: () => void;
+}
+/**
+ * Attempt to claim the in-flight slot for an issue.
+ *
+ * @internal Exported for unit tests. Not part of the public adapter API.
+ *
+ * Returns `{ skip: true }` if another run already holds the issue's slot;
+ * otherwise registers this run and returns a `release()` to clear it. Runs with
+ * no issue id, or with an allowed (user-input) wake reason, are never guarded.
+ *
+ * The get/purge/set sequence contains no `await`, so it executes atomically on
+ * Node's single thread — two concurrent execute() calls cannot both claim.
+ */
+export declare function claimIssueRun(args: {
+    issueId: string | undefined;
+    runId: string | undefined;
+    wakeReason: string | undefined;
+    now?: number;
+    ttlMs?: number;
+    registry?: Map<string, InFlightRun>;
+}): IssueRunClaim;
 export declare function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
 export {};
 //# sourceMappingURL=execute.d.ts.map
