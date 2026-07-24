@@ -197,6 +197,52 @@ up where the last one left off, maintaining conversation context,
 memories, and tool state across heartbeats. The `sessionCodec` validates
 and migrates session state between runs.
 
+### Concurrency model & wake guards
+
+**Important distinction — Paperclip's run concurrency gate is per-*agent*, not
+per-*issue*.** Paperclip admits runs up to `maxConcurrentRuns` per agent
+(`countRunningRunsForAgent` inside `withAgentStartLock`); it does **not** dedupe
+by issue. So two wakes for the *same* issue can each take an agent run slot and
+execute at the same time. This bites when a run is slow (image jobs have been
+seen at 200s+ under load) and a second automated wake — a heartbeat, a liveness
+continuation — fires before the first run reaches a terminal status. The result
+is a duplicate concurrent run: two side-effecting tool calls, two runs on one
+issue.
+
+The adapter defends against stale and duplicate wakes with a chain of guards in
+`execute()`, in order:
+
+1. **Terminal-status guard (#92)** — skip if the wake's issue is already
+   `done` / `cancelled` / `in_review`, or the wake reason is
+   `approval_approved` / `approval_rejected` (nothing for Hermes to do).
+2. **Live-status guard (v0.3.1)** — on `issue_continuation_needed` wakes, the
+   snapshot status can be stale, so re-fetch the issue's live status and skip if
+   it has since reached a terminal state. Fail-open on any fetch error.
+3. **Concurrent-run guard (v0.3.3 / GL-5.1)** — skip if a run is *already in
+   flight* for the same issue. This is the case guards 1–2 miss: the issue is
+   still legitimately non-terminal while the first run is executing.
+
+Guard 3 is an **in-process** registry (`inFlightRunsByIssue`, a module-level
+`Map` keyed by issue id). This is correct **only because Paperclip is a single
+Node process** — one container, no `cluster` / `worker_threads`, and it calls
+`adapter.execute()` in-process — so all concurrent `execute()` invocations share
+the module state, and the check-and-set in `claimIssueRun()` is synchronous (no
+`await` between get and set), making it atomic on Node's single-threaded event
+loop.
+
+> ⚠️ **If Paperclip ever moves to multiple worker processes, a cluster, or a
+> horizontally-scaled deployment, guard 3 silently stops working** (each process
+> gets its own `Map`) and per-issue duplicate runs return. At that point the
+> guard must move to a shared store (e.g. a Redis `SET NX PX` lock keyed by
+> issue id) or — better — be enforced Paperclip-side by making run dispatch
+> refuse a wake for an issue that already has a non-terminal run. See the
+> `pixel-nomad-infra` OUTSTANDING item GL-5.1 (part B).
+
+Genuine user-input wakes (`issue_commented`, `issue_reopened_via_comment`) are
+never blocked by guard 3 — a client comment arriving mid-run is legitimate new
+work. In-flight entries self-expire after 20 minutes so a crashed run can never
+wedge an issue.
+
 ### Skills Integration
 
 The adapter scans two skill sources and merges them:
