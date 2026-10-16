@@ -275,6 +275,14 @@ const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
 interface ParsedOutput {
   sessionId?: string;
+  /**
+   * Session id for the usage lookup only. Hermes >= 0.19 prints the strict
+   * `session_id:` line on stderr, which `sessionId` (stdout only) never sees, so
+   * no run since May 2026 recorded usage. Kept separate from `sessionId` on
+   * purpose: persisting it would turn on `--resume` for later runs, which is a
+   * behaviour change of its own.
+   */
+  usageSessionId?: string;
   response?: string;
   usage?: UsageSummary;
   costUsd?: number;
@@ -364,6 +372,10 @@ export function parseHermesOutput(
   //
   //   session_id: <id>
   const sessionMatch = stdout.match(SESSION_ID_REGEX);
+  const usageSessionMatch = sessionMatch ?? stderr.match(SESSION_ID_REGEX);
+  if (usageSessionMatch?.[1]) {
+    result.usageSessionId = usageSessionMatch[1];
+  }
   if (sessionMatch?.[1]) {
     result.sessionId = sessionMatch?.[1] ?? null;
     // The response is everything before the session_id line
@@ -1045,14 +1057,19 @@ export async function execute(
   // The reader returns null on any error (binary missing, session not
   // found, malformed JSON, older Hermes without the export subcommand),
   // so this is purely additive — never breaks an otherwise-successful run.
-  if (!executionResult.usage && parsed.sessionId) {
+  const usageSessionId = parsed.sessionId ?? parsed.usageSessionId;
+  if (!executionResult.usage && usageSessionId) {
     const fallback = await readHermesSessionUsage({
       hermesCmd,
       hermesHome: env.HERMES_HOME,
-      sessionId: parsed.sessionId,
+      sessionId: usageSessionId,
     });
     if (fallback) {
       executionResult.usage = fallback.usage;
+      // The session row knows what actually ran; the config values are often
+      // placeholders ("auto", "Hermes profile default").
+      if (fallback.billingProvider) executionResult.provider = fallback.billingProvider;
+      if (fallback.model) executionResult.model = fallback.model;
       if (executionResult.costUsd === undefined && fallback.costUsd !== undefined) {
         executionResult.costUsd = fallback.costUsd;
       }

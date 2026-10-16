@@ -38,6 +38,7 @@ export interface HermesSessionUsage {
   usage: UsageSummary;
   costUsd?: number;
   billingProvider?: string;
+  model?: string;
 }
 
 export interface ReadHermesSessionUsageOptions {
@@ -129,7 +130,7 @@ export async function readHermesSessionUsage(
   });
 }
 
-function parseSessionRow(line: string): HermesSessionUsage | null {
+export function parseSessionRow(line: string): HermesSessionUsage | null {
   let row: unknown;
   try {
     row = JSON.parse(line);
@@ -159,6 +160,8 @@ function parseSessionRow(line: string): HermesSessionUsage | null {
   const result: HermesSessionUsage = { usage };
   if (costUsd !== undefined) result.costUsd = costUsd;
   if (billingProvider) result.billingProvider = billingProvider;
+  const model = stringOrUndefined(r.model);
+  if (model) result.model = model;
   return result;
 }
 
