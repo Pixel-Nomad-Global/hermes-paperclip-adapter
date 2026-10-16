@@ -33,6 +33,7 @@ export interface HermesSessionUsage {
     usage: UsageSummary;
     costUsd?: number;
     billingProvider?: string;
+    model?: string;
 }
 export interface ReadHermesSessionUsageOptions {
     /** Hermes CLI binary (default: HERMES_CLI). */
@@ -49,4 +50,5 @@ export interface ReadHermesSessionUsageOptions {
  * JSONL line for token usage and cost.
  */
 export declare function readHermesSessionUsage(opts: ReadHermesSessionUsageOptions): Promise<HermesSessionUsage | null>;
+export declare function parseSessionRow(line: string): HermesSessionUsage | null;
 //# sourceMappingURL=read-hermes-session-usage.d.ts.map

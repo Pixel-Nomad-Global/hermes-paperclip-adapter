@@ -143,3 +143,27 @@ test("buildPersistedSessionParams returns null when there is no session id", () 
   });
   assert.equal(out, null);
 });
+
+// ---------------------------------------------------------------------------
+// Usage lookup session id (hermes >= 0.19 prints session_id on stderr)
+// ---------------------------------------------------------------------------
+
+test("parseHermesOutput takes the usage session id from stderr, without persisting it", () => {
+  // Shape of a real run on 2026-10-10: response on stdout, session line on stderr.
+  const stdout = "Images processed and submitted for client approval.\n";
+  const stderr = "\nsession_id: 20261010_180616_9beab1\n";
+  const parsed = parseHermesOutput(stdout, stderr, 0);
+  assert.equal(parsed.usageSessionId, "20261010_180616_9beab1");
+  assert.equal(parsed.sessionId, undefined, "stderr id must not turn on --resume");
+});
+
+test("parseHermesOutput prefers the stdout session id for usage", () => {
+  const parsed = parseHermesOutput("ok\n\nsession_id: from_stdout", "\nsession_id: from_stderr\n");
+  assert.equal(parsed.sessionId, "from_stdout");
+  assert.equal(parsed.usageSessionId, "from_stdout");
+});
+
+test("parseHermesOutput does NOT take a usage session id from stderr prose", () => {
+  const parsed = parseHermesOutput("", "Use a session ID from a previous CLI run.\nhint: pass --session id: foo");
+  assert.equal(parsed.usageSessionId, undefined);
+});
