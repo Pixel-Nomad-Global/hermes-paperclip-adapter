@@ -23,6 +23,14 @@ export declare const DEFAULT_PROMPT_TEMPLATE = "You are \"{{agentName}}\", an AI
 export declare function buildPrompt(ctx: AdapterExecutionContext, config: Record<string, unknown>): string;
 interface ParsedOutput {
     sessionId?: string;
+    /**
+     * Session id for the usage lookup only. Hermes >= 0.19 prints the strict
+     * `session_id:` line on stderr, which `sessionId` (stdout only) never sees, so
+     * no run since May 2026 recorded usage. Kept separate from `sessionId` on
+     * purpose: persisting it would turn on `--resume` for later runs, which is a
+     * behaviour change of its own.
+     */
+    usageSessionId?: string;
     response?: string;
     usage?: UsageSummary;
     costUsd?: number;

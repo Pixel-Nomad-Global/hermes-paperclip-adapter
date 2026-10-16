@@ -281,6 +281,10 @@ export function parseHermesOutput(stdout, stderr, exitCode) {
     //
     //   session_id: <id>
     const sessionMatch = stdout.match(SESSION_ID_REGEX);
+    const usageSessionMatch = sessionMatch ?? stderr.match(SESSION_ID_REGEX);
+    if (usageSessionMatch?.[1]) {
+        result.usageSessionId = usageSessionMatch[1];
+    }
     if (sessionMatch?.[1]) {
         result.sessionId = sessionMatch?.[1] ?? null;
         // The response is everything before the session_id line
@@ -836,14 +840,21 @@ export async function execute(ctx) {
     // The reader returns null on any error (binary missing, session not
     // found, malformed JSON, older Hermes without the export subcommand),
     // so this is purely additive — never breaks an otherwise-successful run.
-    if (!executionResult.usage && parsed.sessionId) {
+    const usageSessionId = parsed.sessionId ?? parsed.usageSessionId;
+    if (!executionResult.usage && usageSessionId) {
         const fallback = await readHermesSessionUsage({
             hermesCmd,
             hermesHome: env.HERMES_HOME,
-            sessionId: parsed.sessionId,
+            sessionId: usageSessionId,
         });
         if (fallback) {
             executionResult.usage = fallback.usage;
+            // The session row knows what actually ran; the config values are often
+            // placeholders ("auto", "Hermes profile default").
+            if (fallback.billingProvider)
+                executionResult.provider = fallback.billingProvider;
+            if (fallback.model)
+                executionResult.model = fallback.model;
             if (executionResult.costUsd === undefined && fallback.costUsd !== undefined) {
                 executionResult.costUsd = fallback.costUsd;
             }

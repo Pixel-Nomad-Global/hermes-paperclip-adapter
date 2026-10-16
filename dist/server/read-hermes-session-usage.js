@@ -99,7 +99,7 @@ export async function readHermesSessionUsage(opts) {
         });
     });
 }
-function parseSessionRow(line) {
+export function parseSessionRow(line) {
     let row;
     try {
         row = JSON.parse(line);
@@ -128,6 +128,9 @@ function parseSessionRow(line) {
         result.costUsd = costUsd;
     if (billingProvider)
         result.billingProvider = billingProvider;
+    const model = stringOrUndefined(r.model);
+    if (model)
+        result.model = model;
     return result;
 }
 function numberOrZero(v) {
