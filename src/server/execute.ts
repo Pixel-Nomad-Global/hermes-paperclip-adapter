@@ -43,6 +43,7 @@ import {
 } from "./detect-model.js";
 
 import { readHermesSessionUsage } from "./read-hermes-session-usage.js";
+import { priceFromTable } from "./price-table.js";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 
@@ -1086,6 +1087,19 @@ export async function execute(
       await ctx.onLog(
         "stdout",
         `[hermes] Usage from session store: ${parts.join(", ")}\n`,
+      );
+    }
+  }
+
+  // Our price table wins over Hermes' estimate when it lists the model (GL-13):
+  // Hermes' snapshot priced gemini-2.5-flash at a quarter of list, or not at all.
+  if (executionResult.usage) {
+    const tableUsd = priceFromTable(executionResult.model, executionResult.usage);
+    if (tableUsd !== undefined) {
+      executionResult.costUsd = tableUsd;
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Cost from price table: $${tableUsd.toFixed(4)} (${executionResult.model})\n`,
       );
     }
   }
