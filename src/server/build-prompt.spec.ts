@@ -151,3 +151,32 @@ test("buildPrompt: ctx.context.issueId is accepted as an alias for taskId", () =
 
   assert.match(prompt, /Issue ID: HUM-999/);
 });
+
+test("buildPrompt: a task that ends in an approval stops at in_review, never done (Pixel Nomad 2026-10-22)", () => {
+  // test-pipeline run 2f8229bd: the agent set in_review after creating the approval, then
+  // followed the old Workflow step 2 ("mark the issue as completed") and set done 5s later.
+  const ctx = makeCtx({
+    context: {
+      taskId: "CROA-15",
+      paperclipIssue: { id: "CROA-15", title: "Image processing", description: "Task: image_processing" },
+    },
+  });
+
+  const prompt = buildPrompt(ctx, {});
+
+  assert.match(prompt, /created a Paperclip approval for this issue/, "approval case must come first");
+  assert.match(prompt, /-d '\{"status":"in_review"\}'/, "approval case sets in_review");
+  assert.match(prompt, /Do NOT set the issue to `done`/, "approval case forbids done");
+  assert.match(prompt, /If no approval is involved/, "done is only for tasks without an approval");
+  assert.ok(
+    prompt.indexOf('"status":"in_review"') < prompt.indexOf('"status":"done"'),
+    "in_review instruction must precede the done instruction",
+  );
+});
+
+test("buildPrompt: heartbeat wake does not pick up issues waiting in in_review", () => {
+  const prompt = buildPrompt(makeCtx(), {});
+
+  assert.match(prompt, /\.status != "in_review"/, "jq filter must skip in_review issues");
+  assert.match(prompt, /not done\/cancelled\/in_review/);
+});
