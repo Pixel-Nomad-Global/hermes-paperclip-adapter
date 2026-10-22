@@ -113,14 +113,17 @@ Title: {{taskTitle}}
 ## Workflow
 
 1. Work on the task using your tools
-2. When the task is complete or re-complete, mark the issue as completed:
+2. If your work created a Paperclip approval for this issue (content that waits for a human decision), the task is NOT complete yet. Set the issue to \`in_review\`, post one comment that says what waits for approval, and stop:
+   \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"in_review"}'\`
+   Do NOT set the issue to \`done\` and do NOT post a DONE comment. The approval flow closes the issue after the human decides.
+3. If no approval is involved, when the task is complete or re-complete, mark the issue as completed:
    \`curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Content-Type: application/json" -d '{"status":"done"}'\`
-3. When the task is complete or re-complete, post a completion comment on the issue summarizing what you did:
+4. In that case only, post a completion comment on the issue summarizing what you did:
    \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
-4. If the completed issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
+5. If the completed issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
    \`curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
 
-Completion actions are conditional: run steps 2-4 only when the current run genuinely completes or re-completes the assigned task, not merely because you received a wake or comment.
+Completion actions are conditional: run steps 3-5 only when the current run genuinely completes or re-completes the assigned task without an approval, not merely because you received a wake or comment. An issue in \`in_review\` waits for a human: never move it to \`done\` yourself.
 {{/taskId}}
 
 {{#commentId}}
@@ -137,12 +140,12 @@ Do not mark the issue done or post a DONE recap unless this reply genuinely reso
 ## Heartbeat Wake — Check for Work
 
 1. List ALL open issues assigned to you (todo, backlog, in_progress):
-   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | jq -r '.[] | select(.status != "done" and .status != "cancelled") | "\\(.identifier) \\(.status) \\(.priority) \\(.title)"'\`
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | jq -r '.[] | select(.status != "done" and .status != "cancelled" and .status != "in_review") | "\\(.identifier) \\(.status) \\(.priority) \\(.title)"'\`
 
-2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
+2. If issues found, pick the highest priority one that is not done/cancelled/in_review and work on it:
    - Read the issue details: \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
    - Do the work in the project directory: {{projectName}}
-   - When the selected task is complete, mark complete and post a comment (see conditional Workflow steps 2-4 above)
+   - When the selected task is complete, follow the conditional Workflow steps 2-5 above (an approval ends in \`in_review\`, never \`done\`)
 
 3. If no issues assigned to you, check for unassigned issues:
    \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | jq -r '.[] | select(.assigneeAgentId == null) | "\\(.identifier) \\(.title)"'\`
